@@ -10,8 +10,8 @@ Guidance for Claude Code when working in this repository. Derived from the globa
 
 - Stack: TypeScript (strict, ESM) on Node 24, pnpm, Fastify 5 (+ @fastify/rate-limit), zod 4, `pg` (raw SQL), Biome (lint+format), Vitest.
 - Entry points: `src/index.ts` (server), `src/db/migrate.ts` (migrations).
-- Key files: `src/ingest/service.ts` (pipeline orchestration), `src/ingest/server.ts` (routes), `src/pipeline/*` (pure stages), `src/ingest/outbox.ts` (delivery worker), `src/adapters/router.ts` (`LeadRouter`: `LogRouter` default, `HttpRouter` when `DESTINATION_URL` is set), `migrations/*.sql`.
-- Endpoints: `POST /webhooks/leads` (header `x-signature: t=<unix seconds>,v1=<hex HMAC-SHA256 of "<t>.<raw body>">` using `WEBHOOK_SECRET`, ±300 s tolerance; 201 accepted, 200 duplicate, 422 rejected, 401 bad/stale signature, 429 rate limited), `GET /healthz`, `GET /readyz`.
+- Key files: `src/ingest/service.ts` (pipeline orchestration), `src/ingest/server.ts` (routes), `src/pipeline/*` (pure stages), `src/ingest/outbox.ts` (delivery worker), `src/adapters/router.ts` (`LeadRouter`: `LogRouter` default, `HubSpotRouter` when `HUBSPOT_ACCESS_TOKEN` is set, else `HttpRouter` when `DESTINATION_URL` is set), `migrations/*.sql`.
+- Endpoints: `POST /webhooks/leads` (header `x-signature: t=<unix seconds>,v1=<hex HMAC-SHA256 of "<t>.<raw body>">` using `WEBHOOK_SECRET`, ±300 s tolerance; 201 accepted, 200 duplicate, 422 rejected, 401 bad/stale signature, 429 rate limited), `GET /healthz`, `GET /readyz`, `GET /metrics` (only when `METRICS_TOKEN` is set; Bearer auth; Prometheus gauges incl. `lead_outbox_dead` and `lead_outbox_oldest_pending_seconds` — alert on dead > 0 and age > ~15 min).
 
 ### Commands
 
@@ -22,6 +22,7 @@ pnpm dev                # watch mode (loads .env if present)
 pnpm check              # lint + typecheck + tests (run before every PR)
 pnpm test               # vitest (integration tests skip if TEST_DATABASE_URL is unset)
 pnpm format             # biome check --write
+pnpm erase <email>      # right-to-erasure: deletes all local rows for an email (then delete in the CRM too)
 pnpm build              # tsc -> dist/ ; run with `pnpm start:prod`, migrate with `pnpm migrate:prod`
 docker build -t lead-intake .   # multi-stage, non-root; run migrate:prod as a release step
 ```
@@ -35,7 +36,8 @@ Local setup: copy `.env.example` to `.env`, fill in credentials from `~/AGENTS.m
 - Dead-lettered rows stay in `outbox` with `status='dead'` and `last_error`; inspect with `SELECT * FROM outbox WHERE status='dead'`, requeue by setting `status='pending', attempts=0, next_attempt_at=now()`.
 - Outbox batches hold row locks during the HTTP call (10 s timeout); fine at low volume, revisit with claim-then-release if throughput grows.
 - Behind a reverse proxy set `TRUST_PROXY=true`, otherwise rate limiting sees the proxy IP.
-- `src/db/retention.ts` redacts `raw_events.payload` older than `RAW_RETENTION_DAYS` (hourly job in `index.ts`). Normalized `leads` rows are NOT purged; erasure of a specific person is still a manual `DELETE` (see Next Steps).
+- `src/db/retention.ts` redacts `raw_events.payload` older than `RAW_RETENTION_DAYS` (hourly job in `index.ts`). Leads (and their raw/rejected/outbox rows) are deleted after `LEAD_RETENTION_MONTHS` (default 24; sources suggest 12-24 months of inactivity as a common benchmark — vendor blogs, not regulators; confirm against your lawful basis). `pnpm erase <email>` does per-person erasure locally but does NOT touch HubSpot.
+- HubSpot: `HubSpotRouter` does search-by-email → PATCH, else POST (409 race re-searches). Chosen over batch upsert because email-as-idProperty upserts have reported 400 errors. It is unit-tested with mocked fetch only; verify once against a real portal (private app with contacts read+write scopes). The `message` property is HubSpot's standard contact field; map `score` to a custom property if wanted.
 - Dedupe key is `sha256(source + email)`; changing it changes what counts as a duplicate.
 
 ## Machine Environment (from global config)
@@ -133,13 +135,14 @@ docs/adr/       # architecture decision records
 ```
 
 ## Next Steps
-- Real CRM adapter implementing `LeadRouter` (blocked on choosing the CRM); `HttpRouter` covers webhook-style destinations meanwhile.
-- Ship dead-letter logs (`ALERT: outbox entries moved to dead letter`) to an alerting channel; add a metrics endpoint.
-- Per-person erasure endpoint/script (delete lead + outbox + raw events by email) and a lead-retention policy.
+- Smoke-test `HubSpotRouter` against a real HubSpot portal/sandbox; add a custom `lead_score` contact property.
+- Wire `/metrics` into a Prometheus/Grafana (or hosted) alert for dead letters and outbox age.
+- Propagate erasure to HubSpot (GDPR delete endpoint) once the portal is connected.
+- Record lawful basis and retention periods in the Article 30 processing record (outside the repo).
 
 ## Open Questions (resolve and record here)
 
 - Lead sources in scope (web form, email parsing, ads platforms, webhooks)?
-- Destination systems (which CRM, notification channels)? Until decided, point `DESTINATION_URL` at a webhook relay.
+- Notification channels beyond the CRM (Slack/email for hot leads)?
 - Scoring/enrichment: currently rule-based (`src/pipeline/score.ts`); LLM-assisted? (If LLM: use latest Claude models, validate structured output, never trust model output without schema validation.)
 - Volume and latency expectations; retention period for raw payloads.

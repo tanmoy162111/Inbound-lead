@@ -13,3 +13,9 @@
 - **Transactional outbox** (`outbox` table) decouples intake from the destination: the lead and its delivery job commit atomically; a worker claims due rows with `FOR UPDATE SKIP LOCKED`, retries with exponential backoff + jitter, and dead-letters after `OUTBOX_MAX_ATTEMPTS`. Delivery is at-least-once, so destinations get an `idempotency-key`.
 - **Timestamped HMAC** (`t=...,v1=...` over `"<t>.<body>"`, 5-minute tolerance) so captured requests cannot be replayed; constant-time comparison.
 - **Per-IP rate limiting** on the public API; health probes exempt.
+
+## Addendum: CRM, retention, observability
+
+- **CRM: HubSpot** (widely used, free tier, simple private-app Bearer auth). Implemented as search-by-email then PATCH or POST, with 409 re-search, instead of batch upsert, where email as `idProperty` has reported 400 errors. Failures throw so the outbox retries; HubSpot 429s are handled the same way.
+- **Retention:** raw payloads redacted after 30 days; leads deleted after 24 months (common 12-24 month inactivity benchmark from compliance guidance; confirm against lawful basis). Per-person erasure via `pnpm erase <email>`.
+- **Observability:** token-protected Prometheus `/metrics`; alert on dead-letter count and oldest pending age.

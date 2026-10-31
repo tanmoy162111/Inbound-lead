@@ -12,6 +12,7 @@ describe.skipIf(!url)("POST /webhooks/leads", () => {
   const app = buildServer({
     pool,
     webhookSecret: SECRET,
+    metricsToken: "m".repeat(20),
     logLevel: "silent",
   });
 
@@ -72,6 +73,17 @@ describe.skipIf(!url)("POST /webhooks/leads", () => {
       signatureHeader(SECRET, payload, old),
     );
     expect(res.statusCode).toBe(401);
+  });
+
+  it("protects /metrics with a bearer token", async () => {
+    expect((await app.inject({ method: "GET", url: "/metrics" })).statusCode).toBe(401);
+    const ok = await app.inject({
+      method: "GET",
+      url: "/metrics",
+      headers: { authorization: `Bearer ${"m".repeat(20)}` },
+    });
+    expect(ok.statusCode).toBe(200);
+    expect(ok.body).toContain("lead_outbox_dead");
   });
 
   it("quarantines invalid payloads and keeps the raw event", async () => {

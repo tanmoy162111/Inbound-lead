@@ -1,6 +1,8 @@
+import { timingSafeEqual } from "node:crypto";
 import rateLimit from "@fastify/rate-limit";
 import Fastify, { type FastifyInstance } from "fastify";
 import type pg from "pg";
+import { renderMetrics } from "./metrics.js";
 import { intake } from "./service.js";
 import { verifySignature } from "./signature.js";
 
@@ -8,6 +10,8 @@ export interface ServerDeps {
   pool: pg.Pool;
   rateLimitMax?: number;
   trustProxy?: boolean;
+  /** When set, enables GET /metrics guarded by `Authorization: Bearer <token>`. */
+  metricsToken?: string;
   webhookSecret: string;
   logLevel?: string;
 }
@@ -41,6 +45,17 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       return reply.code(503).send({ ok: false });
     }
   });
+
+  if (deps.metricsToken) {
+    const expected = Buffer.from(`Bearer ${deps.metricsToken}`);
+    app.get("/metrics", { config: { rateLimit: false } }, async (req, reply) => {
+      const given = Buffer.from(req.headers.authorization ?? "");
+      if (given.length !== expected.length || !timingSafeEqual(given, expected)) {
+        return reply.code(401).send({ error: "unauthorized" });
+      }
+      return reply.type("text/plain; version=0.0.4").send(await renderMetrics(deps.pool));
+    });
+  }
 
   app.post("/webhooks/leads", async (req, reply) => {
     const raw = (req as unknown as { rawBody?: string }).rawBody ?? "";
