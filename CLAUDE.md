@@ -1,6 +1,7 @@
 # CLAUDE.md — Inbound Lead Intake
 
-Guidance for Claude Code when working in this repository. Derived from the global dev-environment file (`~/AGENTS.md`) plus engineering practices for this project.
+Project-specific facts and exact commands. Global rules (from `~/.claude/CLAUDE.md`) follow below; this section wins on conflict.
+
 
 ## Project
 
@@ -40,109 +41,124 @@ Local setup: copy `.env.example` to `.env`, fill in credentials from `~/AGENTS.m
 - HubSpot: `HubSpotRouter` does search-by-email → PATCH, else POST (409 race re-searches). Chosen over batch upsert because email-as-idProperty upserts have reported 400 errors. It is unit-tested with mocked fetch only; verify once against a real portal (private app with contacts read+write scopes). The `message` property is HubSpot's standard contact field; map `score` to a custom property if wanted.
 - Dedupe key is `sha256(source + email)`; changing it changes what counts as a duplicate.
 
-## Machine Environment (from global config)
-
-- Ubuntu 26.04, Zsh + Oh My Zsh, 20 GB RAM, Ryzen 5 5500U — avoid heavy parallel builds/containers.
-- Runtimes: Node v24 (fnm), pnpm 11, Bun, Python 3.14 (pyenv, uv, pipx), Rust 1.96, Go 1.26.
-- Prefer `pnpm` for Node, `uv` for Python.
-- Databases (local dev only):
-  - PostgreSQL 18 (native, :5432) — `psql -U tanmoy -d tanmoy`. Create a dedicated database/schema for this project; don't use the default `tanmoy` DB.
-  - Redis 7 (Docker `redis-dev`, :6379), MongoDB 7 (Docker `mongo-dev`, :27017).
-  - Start Docker DBs: `docker compose -f ~/docker/dbs/docker-compose.yml up -d`
-  - Credentials live in `~/AGENTS.md`; never copy them into this repo. Use `.env` (gitignored) and commit only `.env.example`.
-- Tooling available: `rg`, `fd`, `jq`, `gh`, `docker`, `kubectl`, `terraform`/`tofu`, `lazygit`.
-- Shell aliases (`g`, `gst`, `dc`, `pn`, `cat`=bat, `ls`=eza) exist interactively; in scripts use the real commands.
-
-## Working Agreements
-
-1. **Read before writing.** Inspect existing code and conventions first; match them.
-2. **Smallest change that solves the problem.** No drive-by refactors, speculative abstractions, or unrequested features.
-3. **Verify, don't assume.** Run tests/linters/type-checks before claiming done; report failures honestly.
-4. **Ask before irreversible or outward-facing actions** (force-push, deleting data, dropping tables, sending real emails/webhooks, deploying).
-5. **Commit only when asked.** Use Conventional Commits (`feat:`, `fix:`, `chore:`, …); small, atomic commits; branch off `main`.
-6. Keep this file accurate — if a command or convention here is wrong, fix it.
-
-## Engineering Practices
-
-### Design
-- Model the lead pipeline as explicit stages: **receive → validate → normalize → dedupe → enrich/score → route → record**. Each stage is a pure, testable unit with typed input/output.
-- Separate I/O (HTTP, DB, queues, third-party APIs) from business logic; inject dependencies.
-- Prefer boring, well-understood tech; add a dependency only with a clear reason.
-- Record significant decisions as short ADRs in `docs/adr/`.
-
-### Reliability (critical for lead intake — a dropped lead is lost revenue)
-- **Persist first, process after.** Durably store the raw payload before any processing; acknowledge to the sender only after it is stored.
-- **Idempotency:** derive an idempotency key per lead (source + external id, or hash of normalized email + timestamp window). Retries and duplicate webhooks must never create duplicates.
-- **Retries with backoff + jitter** for downstream calls; dead-letter queue for poison messages; nothing silently dropped.
-- Timeouts on every network call; circuit-breaker or bounded retries for flaky CRMs.
-- Handle out-of-order and replayed events; make processing replayable from stored raw payloads.
-
-### Data & Privacy (leads contain PII)
-- Treat name, email, phone, company, and message content as PII: don't log it raw; mask in logs (`j***@example.com`).
-- Collect only fields needed; define retention and deletion paths (GDPR/CCPA-style erasure requests).
-- Validate and normalize at the boundary (email, E.164 phone, country, URL); reject or quarantine invalid input with a reason, never guess.
-- Encrypt in transit (TLS) and protect at rest; least-privilege DB roles; migrations are versioned, reversible where practical, and reviewed before applying.
-
-### Security
-- Never commit secrets, tokens, or credentials. Load from environment; keep `.env` out of git.
-- Verify webhook authenticity (HMAC signature + timestamp tolerance) and rate-limit public endpoints.
-- Validate all external input against a schema (e.g. zod / pydantic); use parameterized queries only.
-- Defend against spam/bots (honeypot, rate limits, captcha where appropriate) and header/CSV/HTML injection in lead content.
-- Keep dependencies pinned via lockfile; run an audit (`pnpm audit` / `pip-audit` / `cargo audit`) periodically.
-
-### Code Quality
-- Strict typing on (TypeScript `strict`, `mypy`/`pyright`, etc.). No `any`/untyped escape hatches without a comment.
-- Formatter + linter configured and enforced (pre-commit and CI); don't hand-format.
-- Functions small and single-purpose; names describe domain intent (`normalizePhone`, not `fix`).
-- Comments explain *why*, not *what*. No dead code, no commented-out blocks, no TODOs without an issue/owner.
-- Errors: fail loudly with typed, actionable errors; never swallow exceptions; include context but no PII.
-
-### Testing
-- Test pyramid: many unit tests (pipeline stages, normalizers, scoring), fewer integration tests (DB, queue, webhook endpoint), few end-to-end.
-- Write a failing test first for bug fixes; add regression tests for every production incident.
-- Use realistic fixtures incl. edge cases: duplicate leads, unicode names, malformed emails/phones, empty fields, oversized payloads, replayed webhooks.
-- Tests must be deterministic and isolated (no shared state, no real third-party calls — use fakes/recorded fixtures). Use a throwaway DB/schema for integration tests.
-- Don't mock what you own when a real local Postgres/Redis is available.
-
-### Observability
-- Structured JSON logs with a correlation/lead id on every line; log levels used consistently.
-- Metrics: leads received, accepted, rejected (by reason), duplicates, routing latency, downstream error rate, queue depth/age.
-- Health (`/healthz`) and readiness (`/readyz`) endpoints; alert on stuck queue, rising reject rate, and downstream failures.
-
-### Git & Review
-- Trunk-based: short-lived branches from `main`, PRs small and focused, each with description, test evidence, and rollback note.
-- Never force-push `main`; never rewrite shared history.
-- Run format, lint, type-check, and tests locally before opening a PR.
-
-### Ops
-- Twelve-factor config: everything environment-specific via env vars; document each in `.env.example`.
-- Reproducible local setup: one documented command to bring up dependencies and run the app.
-- Dockerfile: multi-stage, non-root user, pinned base image, minimal final image.
-- CI runs: install (frozen lockfile) → lint → type-check → test → build. Deploys are automated, with a rollback path.
 
 ## Layout
 
 ```
-src/
-  ingest/       # webhook server, signature check, intake service
-  pipeline/     # validate, normalize, dedupe, score (pure logic)
-  adapters/     # destination routers (CRM, Slack, queue) — currently LogRouter
-  db/           # pool + migration runner
-  config/       # typed env loading
-migrations/     # ordered SQL files
-tests/          # unit/ and integration/
-docs/adr/       # architecture decision records
+src/ingest/    webhook server, signature check, intake service, outbox worker, metrics
+src/pipeline/  validate, normalize, dedupe, score (pure logic)
+src/adapters/  destination routers (Log, Http, HubSpot)
+src/db/        pool, migrations, retention, erasure
+src/config/    typed env loading
+migrations/    ordered SQL files (forward-only)
+tests/         unit/ and integration/
+docs/          adr/, runbook.md
 ```
 
-## Next Steps
-- Smoke-test `HubSpotRouter` against a real HubSpot portal/sandbox; add a custom `lead_score` contact property.
-- Wire `/metrics` into a Prometheus/Grafana (or hosted) alert for dead letters and outbox age.
-- Propagate erasure to HubSpot (GDPR delete endpoint) once the portal is connected.
-- Record lawful basis and retention periods in the Article 30 processing record (outside the repo).
+Git hooks: `.githooks/pre-commit` runs `pnpm check` (installed by `pnpm install` via `prepare`).
 
-## Open Questions (resolve and record here)
+---
 
-- Lead sources in scope (web form, email parsing, ads platforms, webhooks)?
-- Notification channels beyond the CRM (Slack/email for hot leads)?
-- Scoring/enrichment: currently rule-based (`src/pipeline/score.ts`); LLM-assisted? (If LLM: use latest Claude models, validate structured output, never trust model output without schema validation.)
-- Volume and latency expectations; retention period for raw payloads.
+# Global Instructions (~/.claude/CLAUDE.md)
+
+Applies to every project. A project's own CLAUDE.md overrides this file where they conflict.
+Plugins in use: **Superpowers** (engineering discipline), **GSD** (project orchestration), **ECC** (specialist agents, security, hooks).
+These instructions are the user's explicit instructions — they take precedence over plugin skill defaults.
+
+## Me
+- Solo builder shipping real products end to end; I want working, deployed software, not demos.
+- Explain decisions briefly in plain English; no lectures. Ask when a choice is expensive to reverse.
+- <!-- EDIT: OS, preferred languages, package managers, cloud, timezone -->
+
+## Non-negotiables
+- **Verify before claiming done.** Run the tests/build/lint and show the output. "Should work" is not done.
+- **Never guess library APIs, versions, prices, or model IDs** — check official docs (Context7 MCP if available, else web) for anything version-sensitive.
+- **Confirm package names exist** on the registry before adding a dependency; prefer well-maintained, widely used packages. Pin via lockfile.
+- **Ask before destructive or irreversible actions**: `rm -rf`, dropping/migrating prod data, force-push, rewriting published history, deleting branches, changing prod infra, spending money, sending external messages.
+- **Secrets**: never hardcode, print, commit, or paste into prompts/logs. Use `.env` (git-ignored) + `.env.example`; prod secrets in a secret manager.
+- **Stay in scope.** No drive-by refactors or "improvements" outside the task; note them as follow-ups instead.
+- **Small, reversible steps.** One logical change per commit; keep the build green.
+- If instructions, the plan, and the code disagree — stop and ask, don't pick silently.
+
+## Plugin routing — one owner per job
+Rule: **exactly one planner per piece of work.** Never run two planning systems on the same task.
+
+**Choose the track at the start of every task:**
+| Situation | Track |
+|---|---|
+| New product / multi-week work / >1 context window / repo has `.planning/` | **GSD track** |
+| Feature, bugfix, or refactor that fits in one session | **Superpowers track** |
+| Tiny change (typo, config, copy, one-liner) | **Direct** — just do it, then verify |
+| Throwaway spike / prototype to learn something | **Direct**, in a scratch branch; TDD optional; never merge spike code as-is |
+
+**GSD track** (GSD owns planning + state; Superpowers owns code quality inside execution)
+- Greenfield: `/gsd-new-project` → per phase: `/gsd-discuss-phase N` → (`/gsd-ui-phase N` for UI) → `/gsd-plan-phase N` → `/gsd-execute-phase N` → `/gsd-code-review N` → `/gsd-verify-work N` → `/gsd-ship N`.
+- Brownfield: `/gsd-map-codebase` first, then `/gsd-new-project`.
+- Milestones: `/gsd-complete-milestone` → `/gsd-new-milestone`. Small ad-hoc task in a GSD repo: `/gsd-quick`.
+- Session continuity: `/gsd-pause-work` / `/gsd-resume-work` / `/gsd-progress`. Run `/clear` between phases.
+- Inside GSD phases, **skip `superpowers:brainstorming` and `superpowers:writing-plans`** (discuss/plan-phase already did that). **Do apply** `test-driven-development`, `systematic-debugging`, `verification-before-completion`.
+- Do not use `/ecc:plan` in a GSD repo.
+- Older GSD installs use `/gsd:<cmd>` instead of `/gsd-<cmd>` — use whichever `/help` shows.
+
+**Superpowers track** (Superpowers owns everything; ECC supplies specialists)
+`brainstorming` (design; one question at a time; get approval) → `using-git-worktrees` → `writing-plans` → `subagent-driven-development` (or `executing-plans`) with `test-driven-development` → `requesting-code-review` → `verification-before-completion` → `finishing-a-development-branch`.
+- Bugs: `systematic-debugging` first — root cause before any fix. Independent failures: `dispatching-parallel-agents`.
+- Review feedback: `receiving-code-review` — verify each point technically; don't blindly accept.
+
+**ECC — specialists and gates (use in either track)**
+- Build/type errors: `/build-fix` or the `build-error-resolver` agent.
+- Security: `security-reviewer` agent for auth, payments, file upload, user input, secrets, AI tool-use code; `/security-scan` (AgentShield) on Claude config/MCP changes and before release.
+- Language/DB review: matching `*-reviewer` agent (e.g. `typescript-reviewer`, `python-reviewer`, `database-reviewer`) alongside the Superpowers/GSD review.
+- Hygiene: `/refactor-clean` (dead code), `/test-coverage`, `/update-docs`, E2E via the `e2e-testing` skill / `e2e-runner` agent.
+- Context: `/context-budget` when context feels heavy; `/save-session` / `/resume-session` outside GSD repos.
+- Do not use ECC's TDD or plan commands when Superpowers/GSD already own that step.
+- If a plugin command name collides, use the namespaced form (e.g. `/ecc:<cmd>`, `superpowers:<skill>`).
+
+## Lifecycle: scratch → production
+1. **Frame** — problem, user, success metric, constraints, non-goals. Write it down (GSD: PROJECT.md; else `docs/spec.md`).
+2. **Decide stack** — boring, well-documented tech I can deploy cheaply. Record big choices as short ADRs in `docs/adr/`. Check current versions in docs.
+3. **Scaffold** — repo, `README` (run/test/deploy in ≤10 lines), `.gitignore`, `.env.example`, formatter, linter, typecheck, test runner, pre-commit hooks, CI running all of them. Project `CLAUDE.md` with exact commands.
+4. **Walking skeleton** — thinnest end-to-end slice deployed to a real staging URL early. Deployment pain found in week 1, not week 6.
+5. **Build** in vertical slices via the chosen track. Tests first for logic; tests alongside for UI/glue.
+6. **Harden** — error handling at boundaries, input validation, authz on every endpoint, rate limits, logging, empty/loading/error states in UI, accessibility basics.
+7. **Release gate** (all must pass): tests + lint + typecheck + build green in CI; security review done; no secrets in diff; migrations reversible; env vars documented; observability in place; rollback plan written.
+8. **Deploy** — staging first, smoke test, then prod. Prefer canary/blue-green or at least instant rollback. Run DB migrations as a separate, backward-compatible step (expand → migrate → contract).
+9. **Operate** — health checks, uptime alerts, error tracking (e.g. Sentry), structured logs, dashboards, backups with a tested restore. After incidents: short blameless postmortem + a regression test.
+
+## Engineering standards
+- **Code**: clear names over comments; comments explain *why*. Small functions, early returns, no dead code, no commented-out code. Follow the repo's existing patterns before introducing new ones.
+- **Types/validation**: strict mode on (TS `strict`, mypy/pyright). Validate all external input at the boundary (Zod / Pydantic).
+- **Errors**: never swallow; fail loudly in dev, gracefully in prod; user-facing messages without internals.
+- **Tests**: test behaviour, not implementation. Unit for logic, integration for DB/API, a few E2E for critical journeys. A bug fix starts with a failing test. Don't mock what you own unless necessary; never weaken a test to make it pass.
+- **Data**: migrations in version control; never edit an applied migration; index foreign keys and hot query columns; parameterised queries only.
+- **APIs**: consistent error shape, pagination, idempotency keys for mutations that may retry, versioning when public.
+- **Frontend**: semantic HTML, keyboard + screen-reader basics, responsive, handle loading/empty/error, measure Core Web Vitals before optimising.
+- **Performance**: measure before optimising; fix N+1s; cache with explicit invalidation.
+- **Dependencies**: justify each new one; prefer stdlib/platform features; keep lockfiles committed; run audit tools in CI.
+
+## Git & PRs
+- Branch per task (`feat/…`, `fix/…`, `chore/…`); worktrees for parallel work. Never commit directly to `main` on shared repos.
+- Conventional Commits (`feat:`, `fix:`, `refactor:`, `test:`, `docs:`, `chore:`); message says why, not just what.
+- Never `--no-verify`, never force-push shared branches, never commit generated secrets/build output.
+- PR description: what/why, how tested (commands + results), risks, rollback, screenshots for UI.
+
+## AI / LLM features
+When building or changing anything LLM-powered (RAG, chatbots, agents, tool calling, MCP servers, embeddings, prompts, evals), **load the `ai-systems-playbook` skill first** and follow its decision ladder and launch checklist.
+Minimum bar even for small AI features: eval set before tuning, prompts and model IDs versioned and pinned, token/loop/$ limits, retrieved and user content treated as untrusted, PII kept out of logs.
+
+## Security baseline (every project)
+- AuthN via a proven provider/library; authZ checked server-side on every request; deny by default.
+- OWASP Top 10 mindset: escape output, parameterise queries, CSRF protection for cookie auth, secure headers, CORS allowlist.
+- Least privilege for every credential, service account, and agent tool. Rotate on suspicion.
+- Dependency + container scanning in CI. Review any new MCP server or plugin before installing — it runs with my credentials.
+
+## Working style
+- For non-trivial work: restate the goal + plan in 3–6 bullets before editing, then execute without asking for approval at every step.
+- Read before writing: inspect relevant files, tests, and conventions first. Use subagents for wide codebase searches to keep main context clean.
+- Context hygiene: `/clear` between unrelated tasks; `/compact` with a focus note around 50–60% usage; long tasks → write progress to a file (GSD STATE.md or `docs/progress.md`) so a fresh session can resume.
+- When stuck after 2 failed attempts at the same fix: stop, switch to `systematic-debugging`, and report findings rather than looping.
+- End every task with: what changed, how it was verified (actual command output), anything left undone or risky.
+
+## Keeping this file healthy
+- Target <200 lines. Project-specific facts go in the project's `CLAUDE.md`; path-specific rules in `.claude/rules/` with `paths:` frontmatter; long procedures become skills.
+- When I correct the same mistake twice, propose a one-line addition here.
