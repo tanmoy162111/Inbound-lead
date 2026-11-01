@@ -19,7 +19,7 @@
     "start:prod": "node dist/index.js",
     "migrate:prod": "node dist/db/migrate.js",
     "erase": "tsx --env-file-if-exists=.env src/db/erase-cli.ts",
-    "prepare": "git config core.hooksPath .githooks"
+    "prepare": "git config core.hooksPath .githooks || true"
   },
   "dependencies": {
     "@fastify/rate-limit": "^11.2.1",
